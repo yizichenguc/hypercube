@@ -715,3 +715,136 @@ lmenssp2 <-
     output
     
   }
+
+#######################ModelSelection Function#################################################
+ModelSelection.Phase = function(list.reduction, signif=0.01, sq.terms=NULL, in.terms=NULL, modelSize=NULL){
+  
+  if (!is.null(sq.terms)){
+    SubsetSQ=result[,sq.terms+3]^2
+    SQ.names=paste("sq",sq.terms)
+    SQ.names=gsub(" ", "", SQ.names, fixed = TRUE)
+  } else{
+    SubsetSQ=data.frame(row.names = 1:6718)
+    SQ.names=NULL
+  }
+  
+  if (!is.null(in.terms)){
+    SubsetIT = iter.names = NULL
+    for(ii in 1:nrow(in.terms)){
+      SubsetIT = cbind(SubsetIT,result[,in.terms[ii,1]+3]*result[,in.terms[ii,2]+3])
+      iter.names = c(iter.names,paste("it",in.terms[ii,1],"x",in.terms[ii,2]))
+      iter.names = gsub(" ", "", iter.names, fixed = TRUE)
+    }
+  } else{
+    SubsetIT = data.frame(row.names = 1:6718)
+    iter.names = NULL
+  }
+  
+  setSelected = c(list.reduction,SQ.names,iter.names)
+  
+  ############Data prep2:create data contains all variables#######################
+  k=length(list.reduction)
+  SubsetX=result[,list.reduction+3]
+  
+  id=result$id
+  fev=result$fev
+  age=result$age
+  
+  d1<-data.frame(id,fev,age,SubsetX,age*SubsetX,SubsetSQ,SubsetIT)
+  nmSubsetX=colnames(result[,(a+3)])
+  nmcross<-paste("age_",nmSubsetX, sep = "")
+  colnames(d1)<- c("id","fev","age",nmSubsetX,nmcross,SQ.names,iter.names)
+  
+  #remove missing data and data normalization
+  ctpdata12=d1
+  for (i in 1:k){
+    ctpdata12<-ctpdata12[(!is.na(ctpdata12[,(3+i)])),]
+    ctpdata12[,(3+i)]<- (ctpdata12[,(3+i)]-mean(ctpdata12[,(3+i)]))/sd(ctpdata12[,(3+i)])
+  }
+  
+  #choose for training data: 20% for testing
+  idname<-unique(id)
+  subject.choose2<-idname[1:70]
+  #train=ctpdata12[ctpdata12$id%in%subject.choose2,]
+  test=ctpdata12[!ctpdata12$id%in%subject.choose2,]
+  
+  ctpdatan <- test
+  
+  #create function generate results for mdoel comparison
+  modelRoutine = function (XSelect){
+    
+    fm1<-c("age")
+    
+    fm2=fm3=NULL
+    df=0
+    for (n in 1:length(XSelect)) {
+      if (XSelect[n] <= k) {
+        c1=colnames(ctpdatan[3+XSelect[n]])
+        c2=colnames(ctpdatan[3+k+XSelect[n]])
+        fm2=c(fm2,c1,c2)
+        df=df+2
+      } else{
+        c3=colnames(ctpdatan[3+2*k+(XSelect[n]-k)])
+        fm3=c(fm3,c3)
+        df=df+1
+      }
+    }
+    
+    fm<-c(fm1,fm2,fm3)
+    temp1 <- as.formula(paste("fev ~ ", paste(fm, collapse= "+")))
+    initial.var<- c(8.273,4.798, 78.837)
+    
+    #fit the model "lmemssp2", get p-values for all variables
+    model1 <- lmenssp2(formula = temp1, data = ctpdatan,
+                       id = ctpdatan$id, process = "ibm",init=initial.var,
+                       timeVar = ctpdatan$age, silent = TRUE)
+    logLik=model1$maxloglik
+    
+    return(list("logLik"=logLik,"df"=df))
+  }
+  
+  ###########################Select subset models, perform likelihood ratio test######################
+  
+  if(is.null(modelSize)){ modelSize=min(5,length(setSelected)) }
+  
+  ### Error message
+  if(modelSize>7){
+    stop('Sorry, this version only support model sizes<8')
+  }
+  
+  goodModels = list()
+  
+  modelBig = modelRoutine(c(1:length(setSelected)))
+  LBig = modelBig$logLik
+  dfBig = modelBig$df
+  
+  for (j in 1:modelSize){
+    combinationMatrix=t(combn(1:length(setSelected),j))
+    if(length(setSelected)>1){
+      combinationMatrixNames=cbind(t(combn(setSelected,j)))
+    } else{
+      combinationMatrixNames=as.matrix(setSelected)
+    }
+    logicFitVectorF=matrix(0,nrow(combinationMatrix))
+    
+    for(l in 1:nrow(combinationMatrix)){
+      XSelect = combinationMatrix[l,]
+      modelSmall = modelRoutine(XSelect)
+      LSmall = modelSmall$logLik
+      dfSmall = modelSmall$df
+      chiCrit = qchisq(1-signif,df = dfBig - dfSmall)
+      if(is.nan(chiCrit)){
+        logicFitVectorF[l]=1
+      } else if (-2*(LSmall-LBig)<=chiCrit){
+        logicFitVectorF[l]=1
+      }
+    }
+    if(j==1){goodModels[[paste('Model Size', j)]] = as.matrix(combinationMatrixNames[which(logicFitVectorF>0),])
+    } else{
+      goodModels[[paste('Model Size', j)]] = combinationMatrixNames[which(logicFitVectorF>0),]
+    }
+  }
+  
+  return(list("goodModels"=goodModels))
+  
+}
